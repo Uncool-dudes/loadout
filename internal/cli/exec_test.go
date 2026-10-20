@@ -217,3 +217,126 @@ func TestSyncNotesLaunchOnlyConfig(t *testing.T) {
 		t.Errorf("stderr = %q", errBuf.String())
 	}
 }
+
+// runBoth runs the command and returns stdout and stderr separately.
+func runBoth(t *testing.T, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	var out, errBuf strings.Builder
+	cmd := NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+	cmd.SetArgs(args)
+	err = cmd.Execute()
+	return out.String(), errBuf.String(), err
+}
+
+func TestExecOptional(t *testing.T) {
+	t.Run("no profile for this repository starts plain claude silently", func(t *testing.T) {
+		e := newSyncEnv(t, launchConfig)
+		claude := stubClaude(t)
+		_, stderr, err := runBoth(t, "exec", "--optional", "--manifest", e.manifest, "--config", e.config, "--", "-p", "hi")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(claude.argv, " "); got != "claude -p hi" {
+			t.Errorf("argv = %q", got)
+		}
+		if stderr != "" {
+			t.Errorf("stderr = %q, want silence", stderr)
+		}
+	})
+	t.Run("outside a repository", func(t *testing.T) {
+		e := newSyncEnv(t, launchConfig)
+		t.Chdir(t.TempDir())
+		claude := stubClaude(t)
+		_, stderr, err := runBoth(t, "exec", "--optional", "--manifest", e.manifest, "--config", e.config)
+		if err != nil || !claude.started || stderr != "" {
+			t.Errorf("started = %v, err = %v, stderr = %q", claude.started, err, stderr)
+		}
+	})
+	t.Run("no config file", func(t *testing.T) {
+		e := newSyncEnv(t, launchConfig)
+		t.Setenv("LOADOUT_CONFIG", filepath.Join(t.TempDir(), "missing.hjson"))
+		claude := stubClaude(t)
+		_, stderr, err := runBoth(t, "exec", "--optional", "--manifest", e.manifest)
+		if err != nil || !claude.started || stderr != "" {
+			t.Errorf("started = %v, err = %v, stderr = %q", claude.started, err, stderr)
+		}
+	})
+	t.Run("a real failure is reported but claude still starts", func(t *testing.T) {
+		e := newSyncEnv(t, launchConfig)
+		t.Setenv("LOADOUT_LAUNCH", t.TempDir())
+		claude := stubClaude(t)
+		_, stderr, err := runBoth(t, "exec", "--optional", "--manifest", e.manifest, "--config", e.config,
+			"--profile", "security", "--profile", "auto", "--", "--resume")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(claude.argv, " "); got != "claude --resume" {
+			t.Errorf("argv = %q, want plain claude", got)
+		}
+		if !strings.Contains(stderr, "conflicting settings") || !strings.Contains(stderr, "without a profile") {
+			t.Errorf("stderr = %q", stderr)
+		}
+	})
+	t.Run("without --optional the same case is an error", func(t *testing.T) {
+		e := newSyncEnv(t, launchConfig)
+		claude := stubClaude(t)
+		if _, err := e.exec(t); err == nil {
+			t.Fatal("want an error")
+		}
+		if claude.started {
+			t.Error("claude started")
+		}
+	})
+}
+
+func TestExecIsQuietUnlessLinksChange(t *testing.T) {
+	e := newSyncEnv(t, launchConfig)
+	t.Setenv("LOADOUT_LAUNCH", t.TempDir())
+	stubClaude(t)
+
+	out, err := e.exec(t, "--profile", "plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(out) != "loadout: 1 added, 0 replaced, 0 removed" {
+		t.Errorf("first launch output = %q", out)
+	}
+	out, err = e.exec(t, "--profile", "plain")
+	if err != nil || out != "" {
+		t.Errorf("second launch output = %q, err = %v, want nothing", out, err)
+	}
+}
+
+func TestSyncQuietAndOptional(t *testing.T) {
+	e := newSyncEnv(t, launchConfig)
+
+	stdout, stderr, err := runBoth(t, "sync", "--optional", "--quiet", "--manifest", e.manifest, "--config", e.config)
+	if err != nil || stdout != "" || stderr != "" {
+		t.Errorf("no profile: %q %q %v, want silent success", stdout, stderr, err)
+	}
+	if _, err := e.sync(t); err == nil {
+		t.Error("without --optional, no profile must still be an error")
+	}
+
+	stdout, stderr, err = runBoth(t, "sync", "--quiet", "--manifest", e.manifest, "--config", e.config, "--profile", "security")
+	if err != nil || stderr != "" || strings.TrimSpace(stdout) != "loadout: 1 added, 0 replaced, 0 removed" {
+		t.Errorf("first quiet sync: %q %q %v", stdout, stderr, err)
+	}
+	stdout, stderr, err = runBoth(t, "sync", "--quiet", "--manifest", e.manifest, "--config", e.config, "--profile", "security")
+	if err != nil || stdout != "" || stderr != "" {
+		t.Errorf("second quiet sync: %q %q %v, want silence", stdout, stderr, err)
+	}
+}
+
+func TestQuietStillReportsConflicts(t *testing.T) {
+	e := newSyncEnv(t, launchConfig)
+	if err := os.MkdirAll(filepath.Join(e.repo, ".claude", "skills", "semgrep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := runBoth(t, "sync", "--quiet", "--optional", "--manifest", e.manifest, "--config", e.config, "--profile", "security")
+	if err == nil || !strings.Contains(err.Error(), "semgrep") {
+		t.Fatalf("error = %v, want the conflict even when quiet and optional", err)
+	}
+}

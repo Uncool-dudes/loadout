@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -28,50 +27,29 @@ var (
 
 func newExecCmd() *cobra.Command {
 	var profiles []string
-	var noSync, dryRun bool
+	var noSync, dryRun, optional bool
 	cmd := &cobra.Command{
 		Use:   "exec [flags] [-- claude-args...]",
 		Short: "Sync skills, then start claude with the profiles' settings and MCP servers",
 		Long: "exec links the skills the profiles select, merges their settings and MCP " +
 			"servers into files under the launch cache, and replaces itself with " +
 			"`claude --settings <file> --mcp-config <file>`. Arguments after -- go to claude.\n\n" +
+			"With --optional it never stands in the way of claude: when no profile applies " +
+			"it starts plain claude, and on any other failure it says so and starts plain " +
+			"claude too. That makes `claude() { loadout exec --optional -- \"$@\"; }` safe.\n\n" +
 			"Settings and MCP servers only reach sessions started this way: an IDE or " +
 			"any other launcher does not apply them.",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, claudeArgs []string) error {
-			in, err := loadInputs(cmd)
+			argv, files, err := prepareLaunch(cmd, profiles, noSync, dryRun, claudeArgs)
 			if err != nil {
-				return err
-			}
-			if in.config == nil {
-				return errors.New("exec needs a config file, and none was found")
-			}
-			target, err := resolveTarget(false)
-			if err != nil {
-				return err
-			}
-			names, err := selectProfiles(in.config, profiles, target)
-			if err != nil {
-				return err
-			}
-			active, err := in.config.Resolve(names...)
-			if err != nil {
-				return err
-			}
-			launch, err := active.Launch()
-			if err != nil {
-				return err
-			}
-
-			if !noSync {
-				if err := syncSkills(cmd, in, target, names, dryRun, false); err != nil {
+				if !optional {
 					return err
 				}
-			}
-
-			argv, files, err := claudeCommand(launch, defaultLaunchPath(), claudeArgs)
-			if err != nil {
-				return err
+				if !notApplicable(err) {
+					fmt.Fprintf(cmd.ErrOrStderr(), "loadout: %v\nloadout: starting claude without a profile\n", err)
+				}
+				argv, files = append([]string{"claude"}, claudeArgs...), nil
 			}
 			if dryRun {
 				return printLaunch(cmd.OutOrStdout(), argv, files)
@@ -92,7 +70,45 @@ func newExecCmd() *cobra.Command {
 	_ = cmd.RegisterFlagCompletionFunc("profile", completeProfiles)
 	cmd.Flags().BoolVar(&noSync, "no-sync", false, "skip linking skills and only launch")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the command and generated files without writing or starting anything")
+	cmd.Flags().BoolVar(&optional, "optional", false, "never block claude: start it plain when no profile applies or anything fails")
 	return cmd
+}
+
+// prepareLaunch syncs skills and works out the claude command line. It is the
+// part of exec that can fail, so --optional can fall back around it.
+func prepareLaunch(cmd *cobra.Command, profiles []string, noSync, dryRun bool, claudeArgs []string) ([]string, []launchFile, error) {
+	in, err := loadInputs(cmd)
+	if err != nil {
+		return nil, nil, err
+	}
+	if in.config == nil {
+		return nil, nil, errNoConfig
+	}
+	target, err := resolveTarget(false)
+	if err != nil {
+		return nil, nil, err
+	}
+	names, err := selectProfiles(in.config, profiles, target)
+	if err != nil {
+		return nil, nil, err
+	}
+	active, err := in.config.Resolve(names...)
+	if err != nil {
+		return nil, nil, err
+	}
+	launch, err := active.Launch()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if !noSync {
+		// Launching is routine, so say something only when links change; a
+		// dry run shows the whole plan.
+		if err := syncSkills(cmd, in, target, names, syncOptions{dryRun: dryRun, quiet: !dryRun}); err != nil {
+			return nil, nil, err
+		}
+	}
+	return claudeCommand(launch, defaultLaunchPath(), claudeArgs)
 }
 
 // launchFile is a generated JSON file passed to claude.

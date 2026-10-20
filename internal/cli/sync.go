@@ -28,44 +28,72 @@ type syncTarget struct {
 	repo *repo.Repo
 }
 
+// Reasons a command has nothing to do for a directory. --optional treats these
+// as success, because a repository without a profile is normal.
+var (
+	errNoProfile = errors.New("no profile selected")
+	errNoConfig  = errors.New("no config file was found")
+	errNotInRepo = errors.New("not in a git repository")
+)
+
+func notApplicable(err error) bool {
+	return errors.Is(err, errNoProfile) || errors.Is(err, errNoConfig) || errors.Is(err, errNotInRepo)
+}
+
 func newSyncCmd() *cobra.Command {
 	var profiles []string
-	var dryRun, global bool
+	var dryRun, global, quiet, optional bool
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Link this directory's profile skills into .claude/skills/",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			in, err := loadInputs(cmd)
-			if err != nil {
-				return err
+			err := runSync(cmd, profiles, global, syncOptions{dryRun: dryRun, quiet: quiet, noteLaunch: !quiet})
+			if optional && notApplicable(err) {
+				return nil
 			}
-			if in.config == nil {
-				return errors.New("sync needs a config file, and none was found")
-			}
-
-			target, err := resolveTarget(global)
-			if err != nil {
-				return err
-			}
-			names, err := selectProfiles(in.config, profiles, target)
-			if err != nil {
-				return err
-			}
-			return syncSkills(cmd, in, target, names, dryRun, true)
+			return err
 		},
 	}
 	cmd.Flags().StringSliceVar(&profiles, "profile", nil, "profile to apply, repeatable (default: LOADOUT_PROFILES, then the projects entry)")
 	_ = cmd.RegisterFlagCompletionFunc("profile", completeProfiles)
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show the plan without changing anything")
 	cmd.Flags().BoolVar(&global, "global", false, "sync the global profiles into ~/.claude/skills")
+	cmd.Flags().BoolVar(&quiet, "quiet", false, "print one line only when something changed, and no warnings")
+	cmd.Flags().BoolVar(&optional, "optional", false, "do nothing, successfully, when no profile applies here")
 	return cmd
 }
 
-// syncSkills links the skills the named profiles select. noteLaunch says
-// whether to point out settings and MCP servers that only `loadout exec`
-// applies; exec passes false because it applies them itself.
-func syncSkills(cmd *cobra.Command, in inputs, target syncTarget, names []profile.Name, dryRun, noteLaunch bool) error {
+func runSync(cmd *cobra.Command, profiles []string, global bool, opts syncOptions) error {
+	in, err := loadInputs(cmd)
+	if err != nil {
+		return err
+	}
+	if in.config == nil {
+		return errNoConfig
+	}
+	target, err := resolveTarget(global)
+	if err != nil {
+		return err
+	}
+	names, err := selectProfiles(in.config, profiles, target)
+	if err != nil {
+		return err
+	}
+	return syncSkills(cmd, in, target, names, opts)
+}
+
+type syncOptions struct {
+	dryRun bool
+	// noteLaunch points out settings and MCP servers that only `loadout exec`
+	// applies; exec itself leaves it off because it applies them.
+	noteLaunch bool
+	// quiet prints one line only when links changed, and no warnings.
+	quiet bool
+}
+
+// syncSkills links the skills the named profiles select.
+func syncSkills(cmd *cobra.Command, in inputs, target syncTarget, names []profile.Name, opts syncOptions) error {
 	store := cache.New(defaultCachePath())
 	p, patched, err := buildPlan(in, target, names, store)
 	if err != nil {
@@ -76,21 +104,24 @@ func syncSkills(cmd *cobra.Command, in inputs, target syncTarget, names []profil
 	if err != nil {
 		return err
 	}
-	for _, sel := range active.Unmatched(in.manifest) {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: selector %s matches no skill in the library\n", sel)
+	if !opts.quiet {
+		for _, sel := range active.Unmatched(in.manifest) {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: selector %s matches no skill in the library\n", sel)
+		}
 	}
-
-	if noteLaunch {
+	if opts.noteLaunch {
 		if l, err := active.Launch(); err == nil && !l.IsEmpty() {
 			fmt.Fprintln(cmd.ErrOrStderr(), "note: these profiles also define settings or MCP servers; only `loadout exec` applies them")
 		}
 	}
 
-	printPlan(cmd.OutOrStdout(), p, dryRun)
+	if !opts.quiet || p.HasChanges() {
+		printPlan(cmd.OutOrStdout(), p, opts.dryRun, opts.quiet)
+	}
 	if len(p.Conflicts) > 0 {
 		return conflictError(p.Conflicts)
 	}
-	if dryRun {
+	if opts.dryRun {
 		return nil
 	}
 	for _, v := range patched {
@@ -163,7 +194,7 @@ func resolveTarget(global bool) (syncTarget, error) {
 	}
 	r, err := repo.Find(cwd)
 	if err != nil {
-		return syncTarget{}, fmt.Errorf("sync links into a project, and %s is not inside a git repository (use --global for ~/.claude): %w", cwd, err)
+		return syncTarget{}, fmt.Errorf("%w: %s is not inside a repository, and project skills link into one (use --global for ~/.claude): %v", errNotInRepo, cwd, err)
 	}
 	return syncTarget{skillsDir: filepath.Join(r.Toplevel, ".claude", "skills"), shadowDir: personal, repo: &r}, nil
 }
@@ -181,7 +212,7 @@ func selectProfiles(cfg *profile.Config, flagNames []string, target syncTarget) 
 	if target.repo == nil {
 		global := cfg.Global()
 		if len(global) == 0 {
-			return nil, errors.New("no global profiles configured: add a global list to the config or pass --profile")
+			return nil, fmt.Errorf("%w: no global profiles configured, add a global list to the config or pass --profile", errNoProfile)
 		}
 		return global, nil
 	}
@@ -190,7 +221,7 @@ func selectProfiles(cfg *profile.Config, flagNames []string, target syncTarget) 
 		return nil, err
 	}
 	if !ok {
-		return nil, fmt.Errorf("no profile selected for %s: pass --profile, set LOADOUT_PROFILES, or add a projects entry", target.repo.Identity)
+		return nil, fmt.Errorf("%w for %s: pass --profile, set LOADOUT_PROFILES, or add a projects entry", errNoProfile, target.repo.Identity)
 	}
 	return names, nil
 }
@@ -239,13 +270,17 @@ func desiredFor(m *skill.Manifest, active *profile.Active, store cache.Cache) ([
 	return desired, patched, nil
 }
 
-func printPlan(w io.Writer, p plan.Plan, dryRun bool) {
+func printPlan(w io.Writer, p plan.Plan, dryRun, quiet bool) {
 	counts := map[plan.Op]int{}
 	for _, a := range p.Actions {
 		counts[a.Op]++
-		if a.Op != plan.Keep {
+		if a.Op != plan.Keep && !quiet {
 			fmt.Fprintf(w, "%-8s %s\n", a.Op, a.Name)
 		}
+	}
+	if quiet {
+		fmt.Fprintf(w, "loadout: %d added, %d replaced, %d removed\n", counts[plan.Add], counts[plan.Replace], counts[plan.Remove])
+		return
 	}
 	prefix := ""
 	if dryRun {
