@@ -137,7 +137,11 @@ func TestSyncConflicts(t *testing.T) {
 	})
 	t.Run("personal skill with the same name", func(t *testing.T) {
 		e := newSyncEnv(t, "")
-		if err := os.MkdirAll(filepath.Join(e.claude, "skills", "semgrep"), 0o755); err != nil {
+		personal := filepath.Join(e.claude, "skills", "semgrep")
+		if err := os.MkdirAll(personal, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(personal, "SKILL.md"), []byte("---\nname: semgrep\n---\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		_, err := e.sync(t, "--profile", "security")
@@ -291,5 +295,19 @@ func TestSyncWarnsAboutUnmatchedSelector(t *testing.T) {
 	}
 	if !strings.Contains(errBuf.String(), "trailofbits/typo matches no skill") {
 		t.Errorf("stderr = %q", errBuf.String())
+	}
+}
+
+func TestSyncIgnoresPersonalDirectoriesWithoutASkill(t *testing.T) {
+	e := newSyncEnv(t, "")
+	husk := filepath.Join(e.claude, "skills", "semgrep")
+	if err := os.MkdirAll(husk, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(husk, "SKILL.md.bak"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.sync(t, "--profile", "security"); err != nil {
+		t.Fatalf("a leftover directory blocked the sync: %v", err)
 	}
 }

@@ -65,8 +65,11 @@ func Scan(dir string) (State, error) {
 	return st, err
 }
 
-// Names lists the visible entries of dir, for detecting name collisions with
-// another skills directory. A missing directory yields none.
+// Names lists the skills in dir, for detecting name collisions with another
+// skills directory. An entry only counts if it holds a SKILL.md (following
+// symlinks), because Claude Code does not load a bare directory, so leftovers
+// such as an emptied directory cannot shadow anything. A missing directory
+// yields none.
 func Names(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -77,7 +80,10 @@ func Names(dir string) ([]string, error) {
 	}
 	var out []string
 	for _, e := range entries {
-		if !strings.HasPrefix(e.Name(), ".") {
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(dir, e.Name(), "SKILL.md")); err == nil {
 			out = append(out, e.Name())
 		}
 	}

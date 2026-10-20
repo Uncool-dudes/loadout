@@ -129,13 +129,35 @@ func TestMarkerIsSorted(t *testing.T) {
 
 func TestNames(t *testing.T) {
 	dir := t.TempDir()
-	for _, n := range []string{"a", "b", ".hidden"} {
-		if err := os.Mkdir(filepath.Join(dir, n), 0o755); err != nil {
+	skills := t.TempDir()
+	mk := func(rel string, withSkill bool) {
+		d := filepath.Join(dir, rel)
+		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
+		if withSkill {
+			if err := os.WriteFile(filepath.Join(d, "SKILL.md"), []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
+	mk("a", true)
+	mk("b", true)
+	mk(".hidden", true)
+	mk("husk", false) // only leftovers, never loaded by Claude Code
+	if err := os.WriteFile(filepath.Join(dir, "husk", "SKILL.md.bak"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A symlink to a skill directory counts.
+	if err := os.WriteFile(filepath.Join(skills, "SKILL.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(skills, filepath.Join(dir, "linked")); err != nil {
+		t.Fatal(err)
+	}
+
 	got, err := Names(dir)
-	if err != nil || !slices.Equal(got, []string{"a", "b"}) {
+	if err != nil || !slices.Equal(got, []string{"a", "b", "linked"}) {
 		t.Fatalf("Names = %v, %v", got, err)
 	}
 	if got, err := Names(filepath.Join(dir, "missing")); err != nil || got != nil {
