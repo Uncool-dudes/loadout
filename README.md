@@ -8,13 +8,11 @@ A skill that is not linked is not loaded, so nothing needs switching off.
 ## Install
 
 ```
-nix profile install git+ssh://git@github.com/Uncool-dudes/loadout
+nix profile install github:Uncool-dudes/loadout
 ```
 
 or `go install github.com/Uncool-dudes/loadout/cmd/loadout@latest`. The flake
-also provides `overlays.default` and a dev shell. While the repository is
-private, use the `git+ssh` form; once it is public, `github:Uncool-dudes/loadout`
-works too.
+also provides `overlays.default` and a dev shell.
 
 ## How it works
 
