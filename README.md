@@ -36,6 +36,10 @@ The library is expected to be built by Nix, but any directory works.
 | `exec [--profile p]... [--no-sync] [--dry-run] [-- claude-args]` | Sync, then start `claude` with the merged settings and MCP servers. |
 | `status [--profile p]... [--global] [-o json]` | Linked skills, effective invocation, description token cost, pending changes. |
 | `list [--source s] [--profile p] [-o json]` | Every skill in the library and the profiles that select it. |
+| `add owner/repo[@ref] [--name n] [--path p] [--include f]... [--no-library] [--pinned] [--dry-run]` | Pin a GitHub repository as a skill source in `sources.json`: resolve the ref, prefetch the hash, detect where the skills are. |
+| `update [name...] [--force] [--dry-run]` | Move sources to the latest commit of their ref. Pinned sources are skipped unless named or `--force`. |
+| `remove name` | Remove a source from `sources.json`. |
+| `sources` | List the pinned sources. |
 | `gc [--dry-run] [--older-than 720h]` | Remove patched copies and launch files nothing can use. |
 | `completion zsh\|bash\|fish` | Shell completion for profiles and sources. |
 
@@ -50,9 +54,37 @@ Profiles are chosen by, in order: `--profile`, `LOADOUT_PROFILES`, the
 | Config | `LOADOUT_CONFIG` | `$XDG_CONFIG_HOME/loadout/loadout.hjson` |
 | Patched skills | `LOADOUT_CACHE` | `$XDG_CACHE_HOME/loadout/skills` |
 | Launch files | `LOADOUT_LAUNCH` | `$XDG_CACHE_HOME/loadout/launch` |
+| Sources | `LOADOUT_SOURCES` | `sources.json` next to the real path of the config file |
 
 `--library`, `--config` and `--manifest` override the first two per run.
 `--manifest` / `LOADOUT_MANIFEST` read a `manifest.json` instead of scanning.
+
+## sources.json
+
+Plain data, edited by `add`, `update` and `remove`, read by Nix to fetch and lay
+out the library. One object per source, keyed by the name used in selectors:
+
+```json
+{
+  "trailofbits": {
+    "owner": "trailofbits",
+    "repo": "skills",
+    "rev": "<40-character commit>",
+    "hash": "sha256-...",
+    "path": "plugins"
+  }
+}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `owner`, `repo` | GitHub repository. |
+| `ref` | Branch or tag `update` follows. Default branch if absent. |
+| `rev`, `hash` | Pinned commit and its Nix hash. |
+| `path` | Directory inside the repository to scan for skills. |
+| `include` | Files or directories to copy into the source instead of `path`, for example `["SKILL.md"]` for a repository whose only skill sits at its root. |
+| `library` | `false` fetches the source without offering its skills (plugins wanted for hooks). |
+| `pinned` | `true` keeps `update` from moving it. |
 
 ## loadout.hjson
 
@@ -162,7 +194,3 @@ internal/repo      git root, repository identity, exclude block
 internal/ident     plain-name check
 nix/package.nix    Nix package
 ```
-
-## Not implemented
-
-- `loadout add` (adding a source is a manual edit of the Nix library).
