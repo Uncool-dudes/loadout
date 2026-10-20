@@ -59,6 +59,7 @@ func addInputFlags(cmd *cobra.Command) {
 	cmd.PersistentFlags().String("library", defaultLibraryPath(), "directory of skill sources, one subdirectory per source")
 	cmd.PersistentFlags().String("manifest", "", "read this manifest.json instead of scanning the library (also LOADOUT_MANIFEST)")
 	cmd.PersistentFlags().String("config", defaultConfigPath(), "path to loadout.hjson")
+	cmd.PersistentFlags().String("sources", "", "path to sources.json (default: next to the config file, also LOADOUT_SOURCES)")
 }
 
 // loadManifest scans the library, unless a manifest file is named: that

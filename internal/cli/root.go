@@ -20,6 +20,7 @@ func NewRootCmd() *cobra.Command {
 		SilenceErrors: true,
 	}
 	addInputFlags(root)
-	root.AddCommand(newSyncCmd(), newExecCmd(), newStatusCmd(), newListCmd(), newGCCmd())
+	root.AddCommand(newSyncCmd(), newExecCmd(), newStatusCmd(), newListCmd(), newGCCmd(),
+		newSourcesCmd(), newAddCmd(), newUpdateCmd(), newRemoveCmd())
 	return root
 }
